@@ -23,13 +23,9 @@ func newCmd(streams genericclioptions.IOStreams) *cobra.Command {
 		Long: templates.LongDesc(`
 			This tool is used to extract and mirror the contents of catalogs for Operator
 			Lifecycle Manager.
-
-			The subcommands allow you to build catalog images from a source (such as appregistry) 
-			and mirror its content across registries.
 			`),
 		Run: kcmdutil.DefaultSubCommandRun(streams.ErrOut),
 	}
-	cmd.AddCommand(NewBuildImage(streams))
 	cmd.AddCommand(NewMirrorCatalog(streams))
 	return cmd
 }
