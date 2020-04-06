@@ -10,13 +10,12 @@ require (
 	github.com/apcera/gssapi v0.0.0-00010101000000-000000000000
 	github.com/aws/aws-sdk-go v1.28.2
 	github.com/blang/semver v3.5.1+incompatible
-	github.com/containerd/continuity v0.0.0-20191127005431-f65d91d395eb // indirect
 	github.com/containers/image v0.0.0-00010101000000-000000000000
 	github.com/containers/storage v0.0.0-20190726081758-912de200380a // indirect
 	github.com/coreos/etcd v3.3.15+incompatible
 	github.com/davecgh/go-spew v1.1.1
 	github.com/docker/distribution v2.7.1+incompatible
-	github.com/docker/docker v0.7.3-0.20190817195342-4760db040282
+	github.com/docker/docker v1.4.2-0.20200203170920-46ec8731fbce
 	github.com/docker/docker-credential-helpers v0.6.3 // indirect
 	github.com/docker/go-units v0.4.0
 	github.com/docker/libtrust v0.0.0-20160708172513-aabc10ec26b7
@@ -37,17 +36,16 @@ require (
 	github.com/openshift/build-machinery-go v0.0.0-20200211121458-5e3d6e570160
 	github.com/openshift/client-go v0.0.0-20200326155132-2a6cd50aedd0
 	github.com/openshift/library-go v0.0.0-20200327125526-163b2f0d6264
-	github.com/operator-framework/operator-registry v1.5.11
-	github.com/pkg/errors v0.8.1
+	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.1.0
 	github.com/russross/blackfriday v1.5.2
-	github.com/spf13/cobra v0.0.5
+	github.com/spf13/cobra v0.0.6
 	github.com/spf13/pflag v1.0.5
 	github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb // indirect
 	github.com/xeipuuv/gojsonschema v1.1.0 // indirect
 	golang.org/x/crypto v0.0.0-20200220183623-bac4c82f6975
 	golang.org/x/net v0.0.0-20200202094626-16171245cfb2
-	golang.org/x/sys v0.0.0-20191022100944-742c48ecaeb7
+	golang.org/x/sys v0.0.0-20200202164722-d101bd2416d5
 	golang.org/x/time v0.0.0-20190308202827-9d24e82272b4
 	gopkg.in/ldap.v2 v2.5.1
 	k8s.io/api v0.18.0
@@ -57,7 +55,7 @@ require (
 	k8s.io/client-go v8.0.0+incompatible
 	k8s.io/component-base v0.18.0
 	k8s.io/klog v1.0.0
-	k8s.io/kubectl v0.0.0
+	k8s.io/kubectl v0.18.0
 	k8s.io/kubernetes v1.13.0
 	k8s.io/utils v0.0.0-20200324210504-a9aa75ae1b89
 	sigs.k8s.io/yaml v1.2.0
