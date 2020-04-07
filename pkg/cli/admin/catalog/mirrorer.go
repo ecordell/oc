@@ -3,6 +3,7 @@ package catalog
 import (
 	"fmt"
 	"github.com/openshift/oc/pkg/cli/image/imagesource"
+	"hash/fnv"
 	"strings"
 
 	"github.com/alicebob/sqlittle"
@@ -11,7 +12,7 @@ import (
 )
 
 type Mirrorer interface {
-	Mirror() (map[string]string, error)
+	Mirror() (map[string]Target, error)
 }
 
 // DatabaseExtractor knows how to pull an index image and extract its database
@@ -25,14 +26,22 @@ func (f DatabaseExtractorFunc) Extract(from imagesource.TypedImageReference) (st
 	return f(from)
 }
 
-// ImageMirrorer knows how to mirror an image from one registry to another
-type ImageMirrorer interface {
-	Mirror(mapping map[string]string) error
+// Target determines the target to mirror to. We store both a tagged and digested target for different purposes.
+// the digest is used for configuring cri-o to pull mirrored images, and the tag is required when mirroring
+// to a registry so that the image does not get GC'd
+type Target struct {
+	WithDigest string
+	WithTag    string
 }
 
-type ImageMirrorerFunc func(mapping map[string]string) error
+// ImageMirrorer knows how to mirror an image from one registry to another
+type ImageMirrorer interface {
+	Mirror(mapping map[string]Target) error
+}
 
-func (f ImageMirrorerFunc) Mirror(mapping map[string]string) error {
+type ImageMirrorerFunc func(mapping map[string]Target) error
+
+func (f ImageMirrorerFunc) Mirror(mapping map[string]Target) error {
 	return f(mapping)
 }
 
@@ -63,66 +72,21 @@ func NewIndexImageMirror(options ...ImageIndexMirrorOption) (*IndexImageMirrorer
 	}, nil
 }
 
-func (b *IndexImageMirrorer) Mirror() (map[string]string, error) {
+func (b *IndexImageMirrorer) Mirror() (map[string]Target, error) {
 	dbFile, err := b.DatabaseExtractor.Extract(b.Source)
 	if err != nil {
 		return nil, err
 	}
 
-	sqlDb, err := sqlittle.Open(dbFile)
+	images, err := imagesFromDb(dbFile)
 	if err != nil {
 		return nil, err
 	}
 
-	// TODO: what is the minimum required db migration?
-
-	// get all images
-	var images = make(map[string]struct{}, 0)
 	var errs = make([]error, 0)
-	columns := []string{"image"}
-	table := "related_image"
-	reader := func(r sqlittle.Row) {
-		var image string
-		if err := r.Scan(&image); err != nil {
-			errs = append(errs, err)
-			return
-		}
-		images[image] = struct{}{}
-	}
-	if err := sqlDb.Select(table, reader, columns...); err != nil {
-		errs = append(errs, err)
-		return nil, errors.NewAggregate(errs)
-	}
-
-	// get all bundlepaths
-	columns = []string{"bundlepath"}
-	table = "operatorbundle"
-	reader = func(r sqlittle.Row) {
-		var bundlePath string
-		if err := r.Scan(&bundlePath); err != nil {
-			errs = append(errs, err)
-			return
-		}
-		images[bundlePath] = struct{}{}
-	}
-	if err := sqlDb.Select(table, reader, columns...); err != nil {
-		errs = append(errs, err)
-		return nil, errors.NewAggregate(errs)
-	}
-
-	// TODO: build mapping options for quay
-	mapping := map[string]string{}
-	for img := range images {
-		if img == "" {
-			continue
-		}
-		ref, err := reference.ParseNormalizedNamed(img)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("couldn't mustParse image for mirroring (%s), skipping mirror: %s", img, err.Error()))
-			continue
-		}
-		domain := reference.Domain(ref)
-		mapping[ref.String()] = b.Dest.String() + strings.TrimPrefix(ref.String(), domain)
+	mapping, mapErrs := mappingForImages(images, b.Dest)
+	if len(mapErrs) > 0 {
+		errs = append(errs, mapErrs...)
 	}
 
 	if err := b.ImageMirrorer.Mirror(mapping); err != nil {
@@ -130,4 +94,102 @@ func (b *IndexImageMirrorer) Mirror() (map[string]string, error) {
 	}
 
 	return mapping, errors.NewAggregate(errs)
+}
+
+func imagesFromDb(file string) (map[string]struct{}, error) {
+	db, err := sqlittle.Open(file)
+	if err != nil {
+		return nil, err
+	}
+
+	// get all images
+	var images = make(map[string]struct{}, 0)
+	var errs = make([]error, 0)
+	reader := func(r sqlittle.Row) {
+		var image string
+		if err := r.Scan(&image); err != nil {
+			errs = append(errs, err)
+			return
+		}
+		if image != "" {
+			images[image] = struct{}{}
+		}
+	}
+	if err := db.Select("related_image", reader, "image"); err != nil {
+		errs = append(errs, err)
+		return nil, errors.NewAggregate(errs)
+	}
+
+	// get all bundlepaths
+	if err := db.Select("operatorbundle", reader, "bundlepath"); err != nil {
+		errs = append(errs, err)
+		return nil, errors.NewAggregate(errs)
+	}
+	return images, nil
+}
+
+func mappingForImages(images map[string]struct{}, dest imagesource.TypedImageReference) (mapping map[string]Target, errs []error) {
+	domain := dest.Ref.Registry
+
+	// handle bare repository targets
+	if !strings.Contains(dest.String(), "/") {
+		domain = dest.String()
+	}
+
+	destComponents := make([]string, 0)
+	for _, s := range strings.Split(strings.TrimPrefix(dest.String(), domain), "/") {
+		if s != "" {
+			destComponents = append(destComponents, s)
+		}
+	}
+
+	mapping = map[string]Target{}
+	hasher := fnv.New32a()
+	for img := range images {
+		if img == "" {
+			continue
+		}
+		ref, err := reference.ParseNormalizedNamed(img)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("couldn't parse image for mirroring (%s), skipping mirror: %v", img, err))
+			continue
+		}
+
+		components := append(destComponents, strings.Split(reference.Path(ref), "/")...)
+		if len(components) < 2 {
+			errs = append(errs, fmt.Errorf("couldn't parse image path components for mirroring (%s), skipping mirror", img))
+			continue
+		}
+
+		// calculate a new path in the target registry, where only the first path component is allowed
+		// the rest of the path components are collapsed into a longer name
+		name := domain + "/" + components[0] + "/" + strings.Join(components[1:], "-")
+
+		var target Target
+		// if ref has a tag, generate a target with the same tag
+		if c, ok := ref.(reference.NamedTagged); ok {
+			target = Target{
+				WithTag: name + ":" + c.Tag(),
+			}
+		} else {
+			// Tag with the hash of the source ref
+			hasher.Reset()
+			_, err = hasher.Write([]byte(ref.String()))
+			if err != nil {
+				errs = append(errs, fmt.Errorf("couldn't generate tag for image (%s), skipping mirror", img))
+				continue
+			}
+			target = Target{
+				WithTag: name + ":" + fmt.Sprintf("%x", hasher.Sum32()),
+			}
+		}
+
+		// if ref has a digest, generate a target with digest as well
+		if c, ok := ref.(reference.Canonical); ok {
+			target.WithDigest = name + "@" + c.Digest().String()
+		}
+
+		mapping[ref.String()] = target
+	}
+	return
 }

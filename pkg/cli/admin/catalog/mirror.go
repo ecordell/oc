@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path"
@@ -152,25 +153,16 @@ func (o *MirrorCatalogOptions) Complete(cmd *cobra.Command, args []string) error
 	}
 
 	var mirrorer ImageMirrorerFunc
-	mirrorer = func(mapping map[string]string) error {
+	mirrorer = func(mapping map[string]Target) error {
 		for from, to := range mapping {
-			fromRef, err := imagesource.ParseSourceReference(from, nil)
+			fromRef, err := imagesource.ParseReference(from)
 			if err != nil {
 				klog.Warningf("couldn't parse %s, skipping mirror: %v", from, err)
 				continue
 			}
 
-			// remove destination digest if present
-			toRef, err := imagesource.ParseReference(to)
-			if err != nil {
-				klog.Warningf("couldn't parse %s, skipping mirror: %v", to, err)
-				continue
-			}
-			if toRef.Type == imagesource.DestinationRegistry && len(toRef.Ref.ID) != 0 {
-				to = toRef.Ref.AsRepository().String()
-			}
-
-			toRef, err = imagesource.ParseDestinationReference(to)
+			// Mirroring happens with a tag so that the images are not GCd from the target registry
+			toRef, err := imagesource.ParseDestinationReference(to.WithTag)
 			if err != nil {
 				klog.Warningf("couldn't parse %s, skipping mirror: %v", to, err)
 				continue
@@ -184,7 +176,7 @@ func (o *MirrorCatalogOptions) Complete(cmd *cobra.Command, args []string) error
 			a.ParallelOptions = o.ParallelOptions
 			a.KeepManifestList = true
 			a.Mappings = []imgmirror.Mapping{{
-				Source:      fromRef[0],
+				Source:      fromRef,
 				Destination: toRef,
 			}}
 			if err := a.Validate(); err != nil {
@@ -198,7 +190,7 @@ func (o *MirrorCatalogOptions) Complete(cmd *cobra.Command, args []string) error
 	}
 
 	if o.ManifestOnly {
-		mirrorer = func(mapping map[string]string) error {
+		mirrorer = func(mapping map[string]Target) error {
 			return nil
 		}
 	}
@@ -260,17 +252,17 @@ func (o *MirrorCatalogOptions) Run() error {
 	return WriteManifests(o.SourceRef.Ref.Name, o.ManifestDir, mapping)
 }
 
-func WriteManifests(name, dir string, mapping map[string]string) error {
-	f, err := os.Create(path.Join(dir, "mapping.txt"))
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			klog.Warningf("error closing file")
+func writeToMapping(w io.StringWriter, mapping map[string]Target) error {
+	for k, v := range mapping {
+		if _, err := w.WriteString(fmt.Sprintf("%s=%s\n", k, v.WithTag)); err != nil {
+			return err
 		}
-	}()
+	}
 
+	return nil
+}
+
+func generateICSP(name string, mapping map[string]Target) ([]byte, error) {
 	icsp := operatorv1alpha1.ImageContentSourcePolicy{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: operatorv1alpha1.GroupVersion.String(),
@@ -284,45 +276,59 @@ func WriteManifests(name, dir string, mapping map[string]string) error {
 	}
 
 	for k, v := range mapping {
-		fromRef, err := imagesource.ParseReference(k)
-		if err != nil {
-			klog.Warningf("error parsing source reference for %s", k)
+		if v.WithDigest == "" {
+			klog.Infof("no digest mapping available for %s, skip writing to ImageContentSourcePolicy", k)
 			continue
 		}
-		toRef, err := imagesource.ParseReference(v)
+		toRef, err := imagesource.ParseReference(v.WithDigest)
 		if err != nil {
-			klog.Warningf("error parsing target reference for %s", v)
+			klog.Warningf("error parsing target reference for %s, skip writing to ImageContentSourcePolicy", v)
 			continue
 		}
 		icsp.Spec.RepositoryDigestMirrors = append(icsp.Spec.RepositoryDigestMirrors, operatorv1alpha1.RepositoryDigestMirrors{
-			Source:  fromRef.Ref.AsRepository().String(),
+			Source:  k,
 			Mirrors: []string{toRef.Ref.AsRepository().String()},
 		})
-
-		// omit digest from target if digest exists
-		to := v
-		if len(toRef.Ref.ID) > 0 {
-			to = toRef.Ref.AsRepository().String()
-		}
-		if _, err := f.WriteString(fmt.Sprintf("%s=%s\n", k, to)); err != nil {
-			return err
-		}
 	}
 
 	// Create an unstructured object for removing creationTimestamp
 	unstructuredObj := unstructured.Unstructured{}
+	var err error
 	unstructuredObj.Object, err = runtime.DefaultUnstructuredConverter.ToUnstructured(&icsp)
 	if err != nil {
-		return fmt.Errorf("ToUnstructured error: %v", err)
+		return nil, fmt.Errorf("ToUnstructured error: %v", err)
 	}
 	delete(unstructuredObj.Object["metadata"].(map[string]interface{}), "creationTimestamp")
 
 	icspExample, err := yaml.Marshal(unstructuredObj.Object)
 	if err != nil {
-		return fmt.Errorf("Unable to marshal ImageContentSourcePolicy example yaml: %v", err)
+		return nil, fmt.Errorf("Unable to marshal ImageContentSourcePolicy yaml: %v", err)
 	}
 
-	if err := ioutil.WriteFile(path.Join(dir, "imageContentSourcePolicy.yaml"), icspExample, os.ModePerm); err != nil {
+	return icspExample, nil
+}
+
+func WriteManifests(name, dir string, mapping map[string]Target) error {
+	f, err := os.Create(path.Join(dir, "mapping.txt"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			klog.Warningf("error closing file")
+		}
+	}()
+
+	if err := writeToMapping(f, mapping); err != nil {
+		return err
+	}
+
+	icsp, err := generateICSP(name, mapping)
+	if err != nil {
+		return err
+	}
+
+	if err := ioutil.WriteFile(path.Join(dir, "imageContentSourcePolicy.yaml"), icsp, os.ModePerm); err != nil {
 		return fmt.Errorf("error writing ImageContentSourcePolicy")
 	}
 	klog.Infof("wrote mirroring manifests to %s", dir)
