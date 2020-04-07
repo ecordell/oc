@@ -7,6 +7,7 @@ require (
 	github.com/MakeNowJust/heredoc v0.0.0-20170808103936-bb23615498cd
 	github.com/RangelReale/osincli v0.0.0-20160924135400-fababb0555f2
 	github.com/alexbrainman/sspi v0.0.0-20180613141037-e580b900e9f5
+	github.com/alicebob/sqlittle v1.3.4
 	github.com/apcera/gssapi v0.0.0-00010101000000-000000000000
 	github.com/aws/aws-sdk-go v1.28.2
 	github.com/blang/semver v3.5.1+incompatible

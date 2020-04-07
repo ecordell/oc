@@ -1,14 +1,16 @@
 package catalog
 
 import (
-"fmt"
+	"fmt"
+
+	"github.com/openshift/oc/pkg/cli/image/imagesource"
 )
 
 type IndexImageMirrorerOptions struct {
 	ImageMirrorer     ImageMirrorer
 	DatabaseExtractor DatabaseExtractor
 
-	Source, Dest string
+	Source, Dest imagesource.TypedImageReference
 	ManifestDir  string
 }
 
@@ -21,11 +23,11 @@ func (o *IndexImageMirrorerOptions) Validate() error {
 	if o.DatabaseExtractor == nil {
 		return fmt.Errorf("can't mirror without a database extractor configured")
 	}
-	if o.Source == "" {
+	if o.Source.String() == "" {
 		return fmt.Errorf("source image required")
 	}
 
-	if o.Dest == "" {
+	if o.Dest.String() == "" {
 		return fmt.Errorf("destination registry required")
 	}
 
@@ -50,8 +52,8 @@ func (c *IndexImageMirrorerOptions) Apply(options []ImageIndexMirrorOption) {
 	}
 }
 
-// ToOption converts an AppregistryBuildOptions object into a function that applies
-// its current configuration to another AppregistryBuildOptions instance
+// ToOption converts an IndexImageMirrorerOptions object into a function that applies
+// its current configuration to another IndexImageMirrorerOptions instance
 func (c *IndexImageMirrorerOptions) ToOption() ImageIndexMirrorOption {
 	return func(o *IndexImageMirrorerOptions) {
 		if c.ImageMirrorer != nil {
@@ -60,10 +62,10 @@ func (c *IndexImageMirrorerOptions) ToOption() ImageIndexMirrorOption {
 		if c.DatabaseExtractor != nil {
 			o.DatabaseExtractor = c.DatabaseExtractor
 		}
-		if c.Source != "" {
+		if c.Source.String() != "" {
 			o.Source = c.Source
 		}
-		if c.Dest != "" {
+		if c.Dest.String() != "" {
 			o.Dest = c.Dest
 		}
 		if c.ManifestDir != "" {
@@ -92,13 +94,13 @@ func WithExtractor(e DatabaseExtractor) ImageIndexMirrorOption {
 	}
 }
 
-func WithSource(s string) ImageIndexMirrorOption {
+func WithSource(s imagesource.TypedImageReference) ImageIndexMirrorOption {
 	return func(o *IndexImageMirrorerOptions) {
 		o.Source = s
 	}
 }
 
-func WithDest(d string) ImageIndexMirrorOption {
+func WithDest(d imagesource.TypedImageReference) ImageIndexMirrorOption {
 	return func(o *IndexImageMirrorerOptions) {
 		o.Dest = d
 	}
@@ -109,4 +111,3 @@ func WithManifestDir(d string) ImageIndexMirrorOption {
 		o.ManifestDir = d
 	}
 }
-

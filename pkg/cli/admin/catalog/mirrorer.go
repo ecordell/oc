@@ -2,8 +2,10 @@ package catalog
 
 import (
 	"fmt"
+	"github.com/openshift/oc/pkg/cli/image/imagesource"
 	"strings"
 
+	"github.com/alicebob/sqlittle"
 	"github.com/docker/distribution/reference"
 	"k8s.io/apimachinery/pkg/util/errors"
 )
@@ -14,12 +16,12 @@ type Mirrorer interface {
 
 // DatabaseExtractor knows how to pull an index image and extract its database
 type DatabaseExtractor interface {
-	Extract(from string) (string, error)
+	Extract(from imagesource.TypedImageReference) (string, error)
 }
 
-type DatabaseExtractorFunc func(from string) (string, error)
+type DatabaseExtractorFunc func(from imagesource.TypedImageReference) (string, error)
 
-func (f DatabaseExtractorFunc) Extract(from string) (string, error) {
+func (f DatabaseExtractorFunc) Extract(from imagesource.TypedImageReference) (string, error) {
 	return f(from)
 }
 
@@ -35,11 +37,11 @@ func (f ImageMirrorerFunc) Mirror(mapping map[string]string) error {
 }
 
 type IndexImageMirrorer struct {
-	ImageMirrorer       ImageMirrorer
-	DatabaseExtractor   DatabaseExtractor
+	ImageMirrorer     ImageMirrorer
+	DatabaseExtractor DatabaseExtractor
 
 	// options
-	Source, Dest        string
+	Source, Dest imagesource.TypedImageReference
 }
 
 var _ Mirrorer = &IndexImageMirrorer{}
@@ -54,33 +56,73 @@ func NewIndexImageMirror(options ...ImageIndexMirrorOption) (*IndexImageMirrorer
 		return nil, err
 	}
 	return &IndexImageMirrorer{
-		ImageMirrorer:         config.ImageMirrorer,
-		DatabaseExtractor:     config.DatabaseExtractor,
-		Source:                config.Source,
-		Dest:                  config.Dest,
+		ImageMirrorer:     config.ImageMirrorer,
+		DatabaseExtractor: config.DatabaseExtractor,
+		Source:            config.Source,
+		Dest:              config.Dest,
 	}, nil
 }
 
 func (b *IndexImageMirrorer) Mirror() (map[string]string, error) {
-	_, err := b.DatabaseExtractor.Extract(b.Source)
+	dbFile, err := b.DatabaseExtractor.Extract(b.Source)
 	if err != nil {
 		return nil, err
 	}
 
-	// TODO: extract images
-	images := []string{}
+	sqlDb, err := sqlittle.Open(dbFile)
+	if err != nil {
+		return nil, err
+	}
 
+	// TODO: what is the minimum required db migration?
+
+	// get all images
+	var images = make(map[string]struct{}, 0)
+	var errs = make([]error, 0)
+	columns := []string{"image"}
+	table := "related_image"
+	reader := func(r sqlittle.Row) {
+		var image string
+		if err := r.Scan(&image); err != nil {
+			errs = append(errs, err)
+			return
+		}
+		images[image] = struct{}{}
+	}
+	if err := sqlDb.Select(table, reader, columns...); err != nil {
+		errs = append(errs, err)
+		return nil, errors.NewAggregate(errs)
+	}
+
+	// get all bundlepaths
+	columns = []string{"bundlepath"}
+	table = "operatorbundle"
+	reader = func(r sqlittle.Row) {
+		var bundlePath string
+		if err := r.Scan(&bundlePath); err != nil {
+			errs = append(errs, err)
+			return
+		}
+		images[bundlePath] = struct{}{}
+	}
+	if err := sqlDb.Select(table, reader, columns...); err != nil {
+		errs = append(errs, err)
+		return nil, errors.NewAggregate(errs)
+	}
+
+	// TODO: build mapping options for quay
 	mapping := map[string]string{}
-
-	var errs []error
-	for _, img := range images {
+	for img := range images {
+		if img == "" {
+			continue
+		}
 		ref, err := reference.ParseNormalizedNamed(img)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("couldn't parse image for mirroring (%s), skipping mirror: %s", img, err.Error()))
+			errs = append(errs, fmt.Errorf("couldn't mustParse image for mirroring (%s), skipping mirror: %s", img, err.Error()))
 			continue
 		}
 		domain := reference.Domain(ref)
-		mapping[ref.String()] = b.Dest + strings.TrimPrefix(ref.String(), domain)
+		mapping[ref.String()] = b.Dest.String() + strings.TrimPrefix(ref.String(), domain)
 	}
 
 	if err := b.ImageMirrorer.Mirror(mapping); err != nil {

@@ -69,7 +69,7 @@ type MirrorCatalogOptions struct {
 	ParallelOptions imagemanifest.ParallelOptions
 
 	SourceRef imagesource.TypedImageReference
-	Dest      string
+	DestRef   imagesource.TypedImageReference
 }
 
 func NewMirrorCatalogOptions(streams genericclioptions.IOStreams) *MirrorCatalogOptions {
@@ -121,7 +121,11 @@ func (o *MirrorCatalogOptions) Complete(cmd *cobra.Command, args []string) error
 		return err
 	}
 	o.SourceRef = srcRef
-	o.Dest = dest
+	destRef, err := imagesource.ParseReference(dest)
+	if err != nil {
+		return err
+	}
+	o.DestRef = destRef
 
 	if o.ManifestDir == "" {
 		o.ManifestDir = o.SourceRef.Ref.Name + "-manifests"
@@ -198,10 +202,9 @@ func (o *MirrorCatalogOptions) Complete(cmd *cobra.Command, args []string) error
 			return nil
 		}
 	}
-
 	o.ImageMirrorer = mirrorer
 
-	var extractor DatabaseExtractorFunc = func(from string) (string, error) {
+	var extractor DatabaseExtractorFunc = func(from imagesource.TypedImageReference) (string, error) {
 		e := imgextract.NewOptions(o.IOStreams)
 		e.SecurityOptions = o.SecurityOptions
 		e.FilterOptions = o.FilterOptions
@@ -243,8 +246,8 @@ func (o *MirrorCatalogOptions) Validate() error {
 
 func (o *MirrorCatalogOptions) Run() error {
 	indexMirrorer, err := NewIndexImageMirror(o.IndexImageMirrorerOptions.ToOption(),
-		WithSource(o.SourceRef.String()),
-		WithDest(o.Dest),
+		WithSource(o.SourceRef),
+		WithDest(o.DestRef),
 	)
 	if err != nil {
 		return err
